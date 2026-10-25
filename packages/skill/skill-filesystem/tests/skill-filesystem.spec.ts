@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
@@ -601,6 +601,42 @@ describe('FileSystemSkillProvider', () => {
     const ctx = await setupLocal(home)
 
     expect(await ctx.skills.snapshot()).toEqual({ skills: [], complete: false })
+  })
+
+  it('keeps readable sibling skills when one file fails to read', async () => {
+    const home = await tempDir('skill-partial-read-failure')
+    const root = join(home, '.agents/skills')
+    await writeSkill(root, 'a-broken-skill', 'Broken skill')
+    await writeSkill(root, 'b-readable-skill', 'Readable skill')
+    await chmod(join(root, 'a-broken-skill/SKILL.md'), 0o000)
+    const ctx = await setupLocal(home)
+
+    expect(await ctx.skills.snapshot()).toMatchObject({
+      skills: [{ name: 'b-readable-skill' }],
+      complete: false,
+    })
+  })
+
+  it('keeps later roots when one filesystem read fails mid-discovery', async () => {
+    const home = await tempDir('skill-fs-partial-read-failure')
+    await writeSkill(join(home, '.dsh/skills'), 'broken-skill', 'Broken skill')
+    await writeSkill(join(home, '.agents/skills'), 'stable-skill', 'Stable skill')
+
+    const ctx = new Context()
+    await ctx.plugin(TestFileSystem)
+    const fs = ctx.fs as TestFileSystem
+    await ctx.plugin(SkillRegistry)
+    await ctx.plugin(SkillFileSystem, {
+      dshHome: join(home, '.dsh'),
+      agentsHome: join(home, '.agents'),
+      watch: false,
+    })
+    fs.errorReadPaths.add(join(home, '.dsh/skills/broken-skill/SKILL.md'))
+
+    expect(await ctx.skills.snapshot()).toMatchObject({
+      skills: [{ name: 'stable-skill' }],
+      complete: false,
+    })
   })
 
   it('forwards cancellation to filesystem reads while loading a skill', async () => {

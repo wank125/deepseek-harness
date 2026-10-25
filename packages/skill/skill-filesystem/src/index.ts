@@ -191,12 +191,14 @@ export class FileSystemSkillProvider implements SkillProvider {
       if (this.disposal !== undefined) throw error
       complete = false
     }
+    const flags = { incomplete: false }
     const candidates: SkillCandidate[] = []
     for (const root of roots) {
-      for (const skill of await discoverRoot(root, this.ctx, this.name)) {
+      for (const skill of await discoverRoot(root, this.ctx, this.name, flags)) {
         candidates.push(skill)
       }
     }
+    if (flags.incomplete) complete = false
     return complete ? candidates : { candidates, complete }
   }
 
@@ -727,7 +729,12 @@ function hasErrorCode(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === code
 }
 
-async function discoverRoot(root: SkillRoot, ctx: Context, provider: string): Promise<SkillCandidate[]> {
+async function discoverRoot(
+  root: SkillRoot,
+  ctx: Context,
+  provider: string,
+  incomplete?: { incomplete: boolean },
+): Promise<SkillCandidate[]> {
   const skills: SkillCandidate[] = []
   const entries = await listSkillRootEntries(root, ctx)
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -738,7 +745,18 @@ async function discoverRoot(root: SkillRoot, ctx: Context, provider: string): Pr
         ? { path: entry.path, directory: root.path }
         : undefined
     if (locator === undefined) continue
-    const parsed = await parseSkillFile(locator.path, ctx, undefined, root.trustedHost === true)
+    let parsed
+    try {
+      parsed = await parseSkillFile(locator.path, ctx, undefined, root.trustedHost === true)
+    } catch (error) {
+      // One unreadable skill file (EACCES, EMFILE, transient I/O) must not
+      // drop its readable siblings or every later root: skip the file, flag
+      // the observation incomplete, and keep scanning.
+      if (error instanceof Error && error.name === 'AbortError') throw error
+      if (incomplete !== undefined) incomplete.incomplete = true
+      ctx.logger.warn(`skill file ${locator.path} ignored: unreadable: ${errorMessage(error)}`)
+      continue
+    }
     if (parsed === undefined) continue
     skills.push({
       name: parsed.name,
