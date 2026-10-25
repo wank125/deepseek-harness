@@ -335,6 +335,18 @@ export class GoalService extends TypertRemoteService {
     if (request.objective === undefined && request.maxGoalRounds === undefined) {
       throw new GoalError('goal edit requires objective and/or maxGoalRounds', 'GOAL_INVALID_EDIT')
     }
+    if (request.maxGoalRounds !== undefined
+      && resolveMaxGoalRounds(request.maxGoalRounds) < currentState.roundsStarted) {
+      // A cap below the rounds already started produces a checkpoint that
+      // violates goalProjectionStateSchema (roundsStarted > maxGoalRounds);
+      // every later cold read would drop the goal column and each resume
+      // would re-fold the full log. Resume enforces the same invariant.
+      throw new GoalError(
+        `goal "${current.id}" already started ${currentState.roundsStarted} goal rounds; `
+        + 'maxGoalRounds cannot be lowered below roundsStarted',
+        'GOAL_INVALID_TRANSITION',
+      )
+    }
     const goal: GoalSnapshot = {
       ...current,
       revision: current.revision + 1,

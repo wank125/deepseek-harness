@@ -328,6 +328,22 @@ describe('GoalService mutations', () => {
     expect(cleared).toEqual({ id: created.ref.id, revision: 6 })
   })
 
+  it('rejects lowering maxGoalRounds below the rounds already started', async () => {
+    const { ctx, agent, session } = await harness()
+    const created = ctx.goals.create(agent, { objective: 'cap edit', maxGoalRounds: 2 })
+    appendRound(session, created, 1)
+    appendRound(session, created, 2)
+    // roundsStarted is now 2: a cap below it would persist a projection
+    // checkpoint that violates goalProjectionStateSchema.
+    expect(() => ctx.goals.edit(agent, created, { maxGoalRounds: 1 })).toThrow(expect.objectContaining({
+      code: 'GOAL_INVALID_TRANSITION',
+    }))
+    // Equal and higher caps remain valid edits.
+    const equalCap = ctx.goals.edit(agent, created, { maxGoalRounds: 2 })
+    expect(equalCap).toMatchObject({ maxGoalRounds: 2 })
+    expect(ctx.goals.edit(agent, equalCap, { maxGoalRounds: 5 })).toMatchObject({ maxGoalRounds: 5 })
+  })
+
   it('edits with compare-and-set revisions and rejects empty edits', async () => {
     const { ctx, agent } = await harness()
     const created = ctx.goals.create(agent, { objective: 'old', maxGoalRounds: 4 })
